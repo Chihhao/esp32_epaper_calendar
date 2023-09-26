@@ -180,14 +180,14 @@ double mapf(double x, double in_min, double in_max, double out_min, double out_m
 }
 
 double getBatteryVolts(){
-  int bat = analogRead(PIN_BAT_ADC); 
-  double adc_ratio = ((double)bat/4096.0) * 2;  
-  double volts = adc_ratio * 3.7;
+  int bat = analogRead(PIN_BAT_ADC) * 2.2 ;  // 2.2 是因為兩個分壓電阻有誤差，不一樣大
+  double adc_ratio = ((double)bat/4096.0);  
+  double volts = adc_ratio * 3.3;
   return volts;
 }
 
 int getBatteryPersentage(double volts){
-  double persentage = mapf(volts, 3.2, 3.7, 0, 100);
+  double persentage = mapf(volts, 3.2, 3.7, 0, 99);
   if(persentage >= 99){ persentage = 99; }
   if(persentage <= 0){ persentage = 0; }
   return  (int)persentage;
@@ -204,6 +204,8 @@ void loop(){
     double dBatVolts = getBatteryVolts();
     int dBatPeresntage = getBatteryPersentage(dBatVolts);  
     Serial.println(String(dBatVolts) + "V, " + String(dBatPeresntage) + "%");
+//    delay(300);
+//    return;
             
     // 連線獲取時間
     if(!RtcSetupOk()){
@@ -239,7 +241,7 @@ void loop(){
     // 清空畫布 
     display.fillScreen(GxEPD_WHITE);
     display.update();    
-    UpdateWindowFull(10);
+    // UpdateWindowFull(10);
     
     // 畫月曆框框    
     display.setFont(&FreeMonoBold9pt7b); 
@@ -355,8 +357,8 @@ void loop(){
     display.fillRect (0, 122-5, 250-w-1, 3, GxEPD_BLACK);     
     //display.fillRect (0, 122-7, 250-w-1, 1, GxEPD_BLACK); 
     
-    //display.update();
-    UpdateWindowFull(10);
+    display.update();
+    //UpdateWindowFull(10);
     display.powerDown();
 
     //delay(5000);
