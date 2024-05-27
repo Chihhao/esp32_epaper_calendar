@@ -7,7 +7,7 @@ const char* CONST_SSID   = "*****";
 const char* CONST_PSWD   = "*****";
 
 #define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  15        /* Time ESP32 will go to sleep (in seconds) */
+#define TIME_TO_SLEEP  10        /* Time ESP32 will go to sleep (in seconds) */
 
 #include <GxGDEH0213B73/GxGDEH0213B73.h>  // 2.13" b/w newer panel
 #include <Fonts/FreeMonoBold9pt7b.h>
@@ -37,6 +37,8 @@ int TIME_TO_MIDNIGHT = 10;   // 到午夜還剩多少秒
 
 unsigned long ulReconnectInterval = 20000;  // 重連WIFI時間
 
+int iBatPeresntage;
+
 typedef enum{ RIGHT_ALIGNMENT = 0, LEFT_ALIGNMENT, CENTER_ALIGNMENT } Text_alignment;
 void displayText(const String &str, uint16_t y, uint8_t alignment){
   int16_t x = 0;
@@ -61,54 +63,26 @@ void displayText(const String &str, uint16_t y, uint8_t alignment){
   display.println(str);
 }
 
-void initNTPServer(){
-  // const char*     ntpServer = "time.stdtime.gov.tw";
-  // const uint32_t  gmtOffset_sec = 8*3600;  // GMT+08:00
-  // const uint16_t  daylightOffset_sec = 0;
-  // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  configTime(0, 0, "time.stdtime.gov.tw");
-
-}
-
 void setTimeZone(){
-    Serial.println("Setting Timezone to CST-8");
+    //Serial.println("Setting Timezone to CST-8");
     setenv("TZ", "CST-8", 1);  
     tzset();
 }
 
-void printLocalTime(){  
-  if(!getLocalTime(&timeinfo)){
-    Serial.println("Failed to obtain time");
-    return;
-  }
-  Serial.println(&timeinfo, "%F %T %A");  
-
-  int remainHour = 23 - timeinfo.tm_hour;
-  int remainMin = 59 - timeinfo.tm_min;
-  int remainSec = 60 - timeinfo.tm_sec;
-  TIME_TO_MIDNIGHT = remainHour * 3600 + remainMin*60 + remainSec;
-  TIME_TO_MIDNIGHT += 30;
-  
-//  Serial.println("remainHour: " + String(remainHour));
-//  Serial.println("remainMin : " + String(remainMin));
-//  Serial.println("remainSec : " + String(remainSec));
-  Serial.println("TIME_TO_MIDNIGHT: " + String(TIME_TO_MIDNIGHT));  
-}
-
-void initWiFi() {
+void initWiFi() {  
   WiFi.mode(WIFI_STA);
   delay(100);
   WiFi.setSleep(false);
   delay(100); 
 
-  WiFi.begin(CONST_SSID, CONST_PSWD);
   Serial.println("Connecting to WiFi ..");
+  WiFi.begin(CONST_SSID, CONST_PSWD);  
 
   int timeout = 0;
   while (WiFi.status() != WL_CONNECTED) {
-    Serial.print('.');
-    delay(1000);
-    if (++timeout > ulReconnectInterval/1000) return;
+      Serial.print('.');
+      delay(1000);
+      if (++timeout > ulReconnectInterval/1000) return;
   }
   Serial.println(WiFi.localIP());  
 }
@@ -120,20 +94,39 @@ void initScreen(){
     display.update();
 }
 
+void GPIO_Reset(){
+  // https://zhuanlan.zhihu.com/p/521640890
+    gpio_reset_pin(GPIO_NUM_0);
+    gpio_reset_pin(GPIO_NUM_2);
+    gpio_reset_pin(GPIO_NUM_4);
+    gpio_reset_pin(GPIO_NUM_12);
+    gpio_reset_pin(GPIO_NUM_13);
+    gpio_reset_pin(GPIO_NUM_14);
+    gpio_reset_pin(GPIO_NUM_15);
+    gpio_reset_pin(GPIO_NUM_25);
+    gpio_reset_pin(GPIO_NUM_26);
+    gpio_reset_pin(GPIO_NUM_27);
+    gpio_reset_pin(GPIO_NUM_32);
+    gpio_reset_pin(GPIO_NUM_33);
+    gpio_reset_pin(GPIO_NUM_34);
+    gpio_reset_pin(GPIO_NUM_35);
+    gpio_reset_pin(GPIO_NUM_36);
+    gpio_reset_pin(GPIO_NUM_37);
+    gpio_reset_pin(GPIO_NUM_38);
+    gpio_reset_pin(GPIO_NUM_39);
+}
+
 void setup(){
     Serial.begin(115200);
+    delay(100);
     Serial.println();
+    
+    GPIO_Reset();
     pinMode(PIN_BAT_ADC, INPUT);   
     
     initScreen();    // 初始化螢幕 
     setTimeZone();  // 設定時區
     display.powerDown();
-}
-
-bool RtcSetupOk() { 
-  printLocalTime();
-  Serial.println("timeinfo.tm_year = " + String(timeinfo.tm_year+1900) );
-  return (timeinfo.tm_year+1900 > 1980); 
 }
 
 // 是否為366天的閏年
@@ -199,45 +192,54 @@ void UpdateWindowFull(int _times){
     }
 }
 
+bool isFirstBootUp(){
+  return getLocalTime(&timeinfo);
+}
+
 void loop(){
     // 獲取電量
     double dBatVolts = getBatteryVolts();
-    int dBatPeresntage = getBatteryPersentage(dBatVolts);  
-    Serial.println(String(dBatVolts) + "V, " + String(dBatPeresntage) + "%");
-//    delay(300);
-//    return;
-            
-    // 連線獲取時間
-    if(!RtcSetupOk()){
+    iBatPeresntage = getBatteryPersentage(dBatVolts);  
+    Serial.println(String(dBatVolts) + "V, " + String(iBatPeresntage) + "%");
+    // delay(300);
+    // return;
+
+    // Connect Wifi
+    if(!isFirstBootUp()){  // 顯示 WIFI Connect...
         display.fillScreen(GxEPD_WHITE);        
         display.setTextColor(GxEPD_BLACK);   
-        display.setFont(&FreeMonoBold18pt7b);     
-        
+        display.setFont(&FreeMonoBold18pt7b); 
         displayText("WIFI", 30, CENTER_ALIGNMENT);
         displayText("Connect...", 70, CENTER_ALIGNMENT);        
-        display.updateWindow(0, 0,  250,  122, true);          
-        initWiFi(); 
-        if(WiFi.status() == WL_CONNECTED){
-            initNTPServer();   
-            setTimeZone();  // 設定時區    
-            printLocalTime();     
-        }        
-                
-        // 顯示 IP
+        display.updateWindow(0, 0,  250,  122, true);   
+    }
+    initWiFi(); 
+    if(!isFirstBootUp()){  // 顯示 IP        
         if(WiFi.status() == WL_CONNECTED){           
           displayText(WiFi.localIP().toString(), 110, CENTER_ALIGNMENT);          
           display.updateWindow(0, 0,  250,  122, true);     
           delay(1000);
         }              
-        display.powerDown();  
-        return;    
     }
-    
-//    timeinfo.tm_year = 2024-1900;
-//    timeinfo.tm_mon = 1;
-//    timeinfo.tm_mday = 28;
-//    timeinfo.tm_wday = 3;
-    
+
+    // Get Time from NTP
+    if(WiFi.status() == WL_CONNECTED){
+        configTime(0, 0, "time.stdtime.gov.tw"); 
+        setTimeZone();  // 設定時區    
+        if(!getLocalTime(&timeinfo)){
+            Serial.println("Get Time Fail");
+        }           
+    }
+    else{
+      return;
+    }
+
+    Serial.println(&timeinfo, "%F %T %A");
+    UpdateScreen();
+    SetDeepSleep();  
+}
+
+void UpdateScreen(){
     // 清空畫布 
     display.fillScreen(GxEPD_WHITE);
     display.update();    
@@ -351,7 +353,7 @@ void loop(){
     display.setTextColor(GxEPD_WHITE);
     display.setFont(&FreeMonoBold9pt7b); 
     display.setCursor(left, 122-5);
-    display.print(String(dBatPeresntage) + "%");   
+    display.print(String(iBatPeresntage) + "%");   
 
     // 畫底線
     display.fillRect (0, 122-5, 250-w-1, 3, GxEPD_BLACK);     
@@ -360,12 +362,29 @@ void loop(){
     display.update();
     //UpdateWindowFull(10);
     display.powerDown();
+}
 
-    //delay(5000);
-    printLocalTime();  
+void SetDeepSleep(){
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+    Serial.println("Configured all RTC Peripherals to be powered down in sleep");
+    //esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
+    //Serial.println("Configured all RTC slow memory to be powered down in sleep");
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
+    Serial.println("Configured all RTC fast memory to be powered down in sleep");
+    esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_OFF);
+    Serial.println("Configured all DOMAIN_MAX to be powered down in sleep");
+ 
+    int remainHour = 23 - timeinfo.tm_hour;
+    int remainMin = 59 - timeinfo.tm_min;
+    int remainSec = 60 - timeinfo.tm_sec;
+    TIME_TO_MIDNIGHT = remainHour * 3600 + remainMin*60 + remainSec;
+    TIME_TO_MIDNIGHT += 30;    
+    Serial.println("TIME_TO_MIDNIGHT: " + String(TIME_TO_MIDNIGHT));  
+    
     //esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
     esp_sleep_enable_timer_wakeup(TIME_TO_MIDNIGHT * uS_TO_S_FACTOR);    
     Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_MIDNIGHT) +  " Seconds");
+    Serial.flush();
     esp_deep_sleep_start();    
-  
 }
+
