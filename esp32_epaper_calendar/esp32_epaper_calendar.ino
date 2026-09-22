@@ -7,9 +7,14 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 
-// WiFi 只是備援；留 "*****" 代表不用 WiFi
-const char* CONST_SSID   = "*****";
-const char* CONST_PSWD   = "*****";
+// WiFi 只是備援。帳密放在 secret.h (不進 git)；
+// 沒有那個檔就退回 "*****"，程式會整段跳過 WiFi。
+#if __has_include("secret.h")
+  #include "secret.h"
+#else
+  const char* CONST_SSID   = "*****";
+  const char* CONST_PSWD   = "*****";
+#endif
 
 #define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
 #define SYNC_RETRY_SEC (30*60)   /* 完全沒有時間可用時，休眠多久再重試校時 (秒) */
