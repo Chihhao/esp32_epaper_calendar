@@ -8,6 +8,7 @@ const char* CONST_PSWD   = "*****";
 
 #define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
 #define TIME_TO_SLEEP  10        /* Time ESP32 will go to sleep (in seconds) */
+#define WIFI_RETRY_SEC (30*60)   /* WiFi 連不上時，休眠多久再重試 (秒) */
 
 #include <GxGDEH0213B73/GxGDEH0213B73.h>  // 2.13" b/w newer panel
 #include <Fonts/FreeMonoBold9pt7b.h>
@@ -30,6 +31,11 @@ const char* CONST_PSWD   = "*****";
 
 GxIO_Class io(SPI, /*CS=5*/ ELINK_SS, /*DC=*/ ELINK_DC, /*RST=*/ ELINK_RESET);
 GxEPD_Class display(io, /*RST=*/ ELINK_RESET, /*BUSY=*/ ELINK_BUSY);
+
+// 先宣告，讓 loop() 能呼叫後面才定義的函式
+void UpdateScreen();
+void SetDeepSleep();
+void DeepSleepFor(int _seconds);
 
 // RTC_DATA_ATTR bool NTP_Setup_OK = false;
 struct tm timeinfo;
@@ -91,7 +97,6 @@ void initScreen(){
     SPI.begin(SPI_CLK, SPI_MISO, SPI_MOSI, ELINK_SS);
     display.init(); // enable diagnostic output on Serial
     display.setRotation(1);
-    display.update();
 }
 
 void GPIO_Reset(){
@@ -231,8 +236,14 @@ void loop(){
         }           
     }
     else{
-      return;
+      // 連不上就先睡，不要醒著空轉重連耗電
+      Serial.println("WiFi Fail, retry after " + String(WIFI_RETRY_SEC) + " Seconds");
+      DeepSleepFor(WIFI_RETRY_SEC);
     }
+
+    // 校時完就關 WiFi，畫圖期間不再耗電
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
 
     Serial.println(&timeinfo, "%F %T %A");
     UpdateScreen();
@@ -240,9 +251,8 @@ void loop(){
 }
 
 void UpdateScreen(){
-    // 清空畫布 
+    // 清空畫布 (只清 buffer，最後 update() 全刷時一起顯示)
     display.fillScreen(GxEPD_WHITE);
-    display.update();    
     // UpdateWindowFull(10);
     
     // 畫月曆框框    
@@ -365,25 +375,20 @@ void UpdateScreen(){
 }
 
 void SetDeepSleep(){
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-    Serial.println("Configured all RTC Peripherals to be powered down in sleep");
-    //esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
-    //Serial.println("Configured all RTC slow memory to be powered down in sleep");
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
-    Serial.println("Configured all RTC fast memory to be powered down in sleep");
-    esp_sleep_pd_config(ESP_PD_DOMAIN_MAX, ESP_PD_OPTION_OFF);
-    Serial.println("Configured all DOMAIN_MAX to be powered down in sleep");
- 
     int remainHour = 23 - timeinfo.tm_hour;
     int remainMin = 59 - timeinfo.tm_min;
     int remainSec = 60 - timeinfo.tm_sec;
     TIME_TO_MIDNIGHT = remainHour * 3600 + remainMin*60 + remainSec;
     TIME_TO_MIDNIGHT += 30;    
     Serial.println("TIME_TO_MIDNIGHT: " + String(TIME_TO_MIDNIGHT));  
-    
-    //esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
-    esp_sleep_enable_timer_wakeup(TIME_TO_MIDNIGHT * uS_TO_S_FACTOR);    
-    Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_MIDNIGHT) +  " Seconds");
+    DeepSleepFor(TIME_TO_MIDNIGHT);
+}
+
+void DeepSleepFor(int _seconds){
+    // 不呼叫 esp_sleep_pd_config()：ESP32 core 3.x (IDF 5) 改成引用計數，
+    // 沒 ON 過就 OFF 會 assert 當機；deep sleep 預設就會關掉這些電源域
+    esp_sleep_enable_timer_wakeup((uint64_t)_seconds * uS_TO_S_FACTOR);    
+    Serial.println("Setup ESP32 to sleep for " + String(_seconds) +  " Seconds");
     Serial.flush();
     esp_deep_sleep_start();    
 }

@@ -16,7 +16,7 @@ LilyGo T5 2.13" e-paper (ESP32) 桌上月曆。單一 Arduino sketch `esp32_epap
 ## 程式結構 (單檔)
 
 - 腳位：SPI MOSI 23 / CLK 18 / CS 5，e-paper BUSY 4 / RST 16 / DC 17，電池 ADC 35，按鈕 39 (目前沒用到)。面板驅動 `GxGDEH0213B73`，setRotation(1) 後畫布 250x122。
-- setup() 只重置 GPIO、初始化螢幕、設時區 (TZ 寫死 CST-8)。所有工作在 loop() 且只跑一次，結尾就 deep sleep；WiFi 連不上時 loop() 直接 return，會不斷重跑重連而不休眠。
+- setup() 只重置 GPIO、初始化螢幕、設時區 (TZ 寫死 CST-8)。所有工作在 loop() 且只跑一次，結尾就 deep sleep；WiFi 連不上時休眠 WIFI_RETRY_SEC (30 分鐘) 再重試。校時成功後先關 WiFi 再畫圖。
 - isFirstBootUp() 用 getLocalTime() 是否成功判斷「還沒校過時」，決定要不要在螢幕顯示 WIFI Connect... / IP 的過場畫面。
 - UpdateScreen() 的座標全是手算絕對值 (格子 27x17、右側欄寬 66)，改版面要一起調。
 - 電量：ADC 讀值 ×2.2 (分壓電阻誤差補償) 換算 3.3V，再把 3.2V~3.7V 線性映射到 0~99%。
