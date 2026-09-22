@@ -2,13 +2,28 @@
 #include "SPI.h"
 #include <WiFi.h>
 #include "time.h"
+#include <sys/time.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
 
+// WiFi 只是備援；留 "*****" 代表不用 WiFi
 const char* CONST_SSID   = "*****";
 const char* CONST_PSWD   = "*****";
 
 #define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
-#define TIME_TO_SLEEP  10        /* Time ESP32 will go to sleep (in seconds) */
-#define WIFI_RETRY_SEC (30*60)   /* WiFi 連不上時，休眠多久再重試 (秒) */
+#define SYNC_RETRY_SEC (30*60)   /* 完全沒有時間可用時，休眠多久再重試校時 (秒) */
+
+// 每天兩次醒來：00:00:30 換日重畫 (只用 RTC)，09:00:30 開 BLE 讓 PC 校時
+#define WAKE_MARGIN_SEC 30
+#define SYNC_HOUR       9
+
+// BLE 校時：PC 端 (tools/ble_time_sync.py) 掃到 BLE_NAME 後，
+// 往 BLE_CHR_UUID 寫入 UTC epoch 秒數 (ASCII 十進位，或 4 bytes little-endian)
+#define BLE_NAME        "EPD-CAL"
+#define BLE_SVC_UUID    "a7c1f0e0-1d2b-4c3d-8e9f-0000c0ffee01"
+#define BLE_CHR_UUID    "a7c1f0e0-1d2b-4c3d-8e9f-0000c0ffee02"
+#define BLE_WINDOW_SEC  30
 
 #include <GxGDEH0213B73/GxGDEH0213B73.h>  // 2.13" b/w newer panel
 #include <Fonts/FreeMonoBold9pt7b.h>
@@ -36,10 +51,13 @@ GxEPD_Class display(io, /*RST=*/ ELINK_RESET, /*BUSY=*/ ELINK_BUSY);
 void UpdateScreen();
 void SetDeepSleep();
 void DeepSleepFor(int _seconds);
+bool bleTimeSync(int _seconds);
+bool wifiTimeSync();
 
-// RTC_DATA_ATTR bool NTP_Setup_OK = false;
 struct tm timeinfo;
-int TIME_TO_MIDNIGHT = 10;   // 到午夜還剩多少秒
+RTC_DATA_ATTR bool rtcWakeForSync = false;  // 這次醒來是不是 09:00:30 的校時
+RTC_DATA_ATTR int  rtcLastDrawnDay = -1;    // 上次畫的日期 (年*1000+一年中的第幾天)，沒變就不重畫
+volatile bool bleGotTime = false;
 
 unsigned long ulReconnectInterval = 20000;  // 重連WIFI時間
 
@@ -197,57 +215,113 @@ void UpdateWindowFull(int _times){
     }
 }
 
-bool isFirstBootUp(){
-  return getLocalTime(&timeinfo);
-}
-
 void loop(){
     // 獲取電量
     double dBatVolts = getBatteryVolts();
     iBatPeresntage = getBatteryPersentage(dBatVolts);  
     Serial.println(String(dBatVolts) + "V, " + String(iBatPeresntage) + "%");
-    // delay(300);
-    // return;
 
-    // Connect Wifi
-    if(!isFirstBootUp()){  // 顯示 WIFI Connect...
-        display.fillScreen(GxEPD_WHITE);        
-        display.setTextColor(GxEPD_BLACK);   
-        display.setFont(&FreeMonoBold18pt7b); 
-        displayText("WIFI", 30, CENTER_ALIGNMENT);
-        displayText("Connect...", 70, CENTER_ALIGNMENT);        
-        display.updateWindow(0, 0,  250,  122, true);   
-    }
-    initWiFi(); 
-    if(!isFirstBootUp()){  // 顯示 IP        
-        if(WiFi.status() == WL_CONNECTED){           
-          displayText(WiFi.localIP().toString(), 110, CENTER_ALIGNMENT);          
-          display.updateWindow(0, 0,  250,  122, true);     
-          delay(1000);
-        }              
-    }
+    // RTC 時間是否可用 (deep sleep 期間會保留，冷開機後歸零)
+    bool haveTime = getLocalTime(&timeinfo, 0);
+    Serial.println(String("haveTime=") + haveTime + ", wakeForSync=" + rtcWakeForSync);
 
-    // Get Time from NTP
-    if(WiFi.status() == WL_CONNECTED){
-        configTime(0, 0, "time.stdtime.gov.tw"); 
-        setTimeZone();  // 設定時區    
-        if(!getLocalTime(&timeinfo)){
-            Serial.println("Get Time Fail");
-        }           
-    }
-    else{
-      // 連不上就先睡，不要醒著空轉重連耗電
-      Serial.println("WiFi Fail, retry after " + String(WIFI_RETRY_SEC) + " Seconds");
-      DeepSleepFor(WIFI_RETRY_SEC);
+    if(!haveTime || rtcWakeForSync){
+        if(!haveTime){  // 冷開機：告訴使用者在等校時
+            display.fillScreen(GxEPD_WHITE);        
+            display.setTextColor(GxEPD_BLACK);   
+            display.setFont(&FreeMonoBold18pt7b); 
+            displayText("Time Sync", 30, CENTER_ALIGNMENT);
+            displayText("BLE:" BLE_NAME, 70, CENTER_ALIGNMENT);        
+            display.updateWindow(0, 0,  250,  122, true);   
+        }
+        bool synced = bleTimeSync(BLE_WINDOW_SEC);
+        if(!synced && String(CONST_SSID) != "*****"){
+            synced = wifiTimeSync();
+        }
+        Serial.println(String("synced=") + synced);
+        haveTime = getLocalTime(&timeinfo, 0);
     }
 
-    // 校時完就關 WiFi，畫圖期間不再耗電
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    if(!haveTime){
+        // 冷開機又沒校到時間，先睡再試
+        Serial.println("No time, retry after " + String(SYNC_RETRY_SEC) + " Seconds");
+        rtcWakeForSync = true;
+        DeepSleepFor(SYNC_RETRY_SEC);
+    }
 
     Serial.println(&timeinfo, "%F %T %A");
-    UpdateScreen();
+
+    int today = (timeinfo.tm_year + 1900) * 1000 + timeinfo.tm_yday;
+    if(today != rtcLastDrawnDay){
+        UpdateScreen();
+        rtcLastDrawnDay = today;
+    }
+    else{
+        Serial.println("Same day, skip drawing");
+    }
     SetDeepSleep();  
+}
+
+// 開 BLE 廣播等 PC 寫入時間，最多等 _seconds 秒
+class TimeWriteCallback : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* c, esp_ble_gatts_cb_param_t* p) override {
+        String v = c->getValue();
+        time_t epoch = 0;
+        if(v.length() == 4){
+            epoch = (uint32_t)v[0] | ((uint32_t)v[1] << 8) | ((uint32_t)v[2] << 16) | ((uint32_t)v[3] << 24);
+        }
+        else{
+            epoch = strtoul(v.c_str(), NULL, 10);
+        }
+        if(epoch < 1600000000UL){  // 2020 年以前一律當成錯的
+            Serial.println("BLE: bad value");
+            return;
+        }
+        struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
+        settimeofday(&tv, NULL);
+        bleGotTime = true;
+        Serial.println("BLE: got epoch " + String((unsigned long)epoch));
+    }
+};
+
+bool bleTimeSync(int _seconds){
+    bleGotTime = false;
+    BLEDevice::init(BLE_NAME);
+    BLEServer* server = BLEDevice::createServer();
+    BLEService* svc = server->createService(BLE_SVC_UUID);
+    BLECharacteristic* chr = svc->createCharacteristic(BLE_CHR_UUID,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ);
+    chr->setCallbacks(new TimeWriteCallback());
+    chr->setValue("epoch?");
+    svc->start();
+    BLEAdvertising* adv = BLEDevice::getAdvertising();
+    adv->addServiceUUID(BLE_SVC_UUID);
+    adv->setScanResponse(true);
+    BLEDevice::startAdvertising();
+    Serial.println("BLE: advertising " + String(_seconds) + "s");
+
+    unsigned long t0 = millis();
+    while(!bleGotTime && millis() - t0 < (unsigned long)_seconds * 1000){
+        delay(100);
+    }
+    delay(300);  // 讓寫入的回應送出去再關
+    BLEDevice::deinit(true);
+    return bleGotTime;
+}
+
+// WiFi + NTP 校時 (備援)
+bool wifiTimeSync(){
+    initWiFi(); 
+    if(WiFi.status() != WL_CONNECTED){
+        WiFi.mode(WIFI_OFF);
+        return false;
+    }
+    configTime(0, 0, "time.stdtime.gov.tw"); 
+    setTimeZone();
+    bool ok = getLocalTime(&timeinfo);  // 最多等 5 秒
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return ok;
 }
 
 void UpdateScreen(){
@@ -375,13 +449,20 @@ void UpdateScreen(){
 }
 
 void SetDeepSleep(){
-    int remainHour = 23 - timeinfo.tm_hour;
-    int remainMin = 59 - timeinfo.tm_min;
-    int remainSec = 60 - timeinfo.tm_sec;
-    TIME_TO_MIDNIGHT = remainHour * 3600 + remainMin*60 + remainSec;
-    TIME_TO_MIDNIGHT += 30;    
-    Serial.println("TIME_TO_MIDNIGHT: " + String(TIME_TO_MIDNIGHT));  
-    DeepSleepFor(TIME_TO_MIDNIGHT);
+    int nowSec  = timeinfo.tm_hour * 3600 + timeinfo.tm_min * 60 + timeinfo.tm_sec;
+    int syncSec = SYNC_HOUR * 3600 + WAKE_MARGIN_SEC;   // 09:00:30
+    int dayEnd  = 24 * 3600 + WAKE_MARGIN_SEC;          // 隔天 00:00:30
+    int sleepSec;
+    if(nowSec < syncSec){
+        sleepSec = syncSec - nowSec;
+        rtcWakeForSync = true;
+    }
+    else{
+        sleepSec = dayEnd - nowSec;
+        rtcWakeForSync = false;
+    }
+    Serial.println("Next wake in " + String(sleepSec) + "s, sync=" + String(rtcWakeForSync));
+    DeepSleepFor(sleepSec);
 }
 
 void DeepSleepFor(int _seconds){
