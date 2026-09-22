@@ -18,6 +18,7 @@ LilyGo T5 2.13" e-paper (ESP32) 桌上月曆。單一 Arduino sketch `esp32_epap
 - GxEPD 3.1.3 (非 GxEPD2) 隨 repo 放在 `library/GxEPD/`，Arduino IDE 不會自動找到，須複製或 symlink 到 `~/Documents/Arduino/libraries/`；相依的 Adafruit GFX 已裝在該目錄。BLE 用 core 內建程式庫，不用另外裝。
 - 沒有自動化測試，驗證方式是燒錄後看 Serial (115200) 印出的電壓、haveTime/wakeForSync、BLE 狀態與下次醒來秒數。
 - WiFi 帳密放在 `esp32_epaper_calendar/secret.h` (被 .gitignore 排除，不進 git)，要用 WiFi 備援才填。sketch 用 `__has_include` 判斷，沒有該檔就退回 `*****`，照樣編得過。
+- **ESP32 只支援 2.4GHz。** 拿 iPhone 個人熱點當 WiFi 來源時，必須打開熱點設定裡的「最大化相容性」把它從 5GHz 切到 2.4GHz，否則板子連掃都掃不到那個網路。症狀是 Serial 出現 21 個點後逾時，看起來像密碼錯但其實是找不到網路。
 
 ## 程式結構 (單檔)
 
